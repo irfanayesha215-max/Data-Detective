@@ -76,6 +76,42 @@ def check_inconsistent_categories(df: pd.DataFrame) -> dict:
     return report
 
 
+def check_type_mismatches(df: pd.DataFrame) -> dict:
+    """
+    Look for columns that are *mostly* one type (like numbers) but have
+    a small number of values that don't fit - e.g. a numeric column
+    with a few "unknown" or "N/A" text values mixed in.
+    """
+    report = {}
+
+    for column in df.columns:
+        values = df[column].dropna()
+        if len(values) == 0:
+            continue
+
+        # try converting every value to a number
+        # errors="coerce" turns anything that fails into NaN instead of crashing
+        numeric_attempt = pd.to_numeric(values, errors="coerce")
+
+        # values that were real numbers before, but became NaN after conversion,
+        # are the ones that don't actually fit as numbers
+        failed_to_convert = values[numeric_attempt.isna()]
+        succeeded = values[~numeric_attempt.isna()]
+
+        # only flag this column if MOST values are numeric but a few aren't -
+        # if it's mostly text, it's just a text column, not a "mismatch"
+        if len(succeeded) > 0 and len(failed_to_convert) > 0:
+            mostly_numeric = len(succeeded) > len(failed_to_convert)
+            if mostly_numeric:
+                report[column] = {
+                    "expected_type": "numeric",
+                    "bad_values": failed_to_convert.unique().tolist(),
+                    "bad_value_count": int(len(failed_to_convert))
+                }
+
+    return report
+
+
 if __name__ == "__main__":
     # Quick manual test with a tiny fake messy dataset
     # (row 4 is an exact duplicate of row 1, on purpose)
@@ -83,6 +119,7 @@ if __name__ == "__main__":
         "Name": ["Alice", "Bob", None, "David", "Alice"],
         "Age": [25, None, 30, 40, 25],
         "Country": ["USA", "usa", "USA", None, "USA"],
+        "Salary": [50000, 60000, "unknown", 55000, 50000],
     }
     df = pd.DataFrame(sample_data)
 
@@ -94,3 +131,6 @@ if __name__ == "__main__":
 
     print("\nInconsistent categories:")
     print(check_inconsistent_categories(df))
+
+    print("\nType mismatches:")
+    print(check_type_mismatches(df))
