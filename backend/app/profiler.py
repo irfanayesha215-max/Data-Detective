@@ -112,14 +112,81 @@ def check_type_mismatches(df: pd.DataFrame) -> dict:
     return report
 
 
+def check_outliers(df: pd.DataFrame) -> dict:
+    """
+    For numeric columns, flag values that are unusually far from
+    the rest of the data using the IQR (interquartile range) method -
+    a standard, simple way to spot outliers.
+    """
+    report = {}
+
+    for column in df.columns:
+        if not pd.api.types.is_numeric_dtype(df[column]):
+            continue
+
+        values = df[column].dropna()
+        if len(values) < 4:
+            # too few values to reasonably judge what's "normal"
+            continue
+
+        # Q1 = value below which 25% of the data falls
+        # Q3 = value below which 75% of the data falls
+        q1 = values.quantile(0.25)
+        q3 = values.quantile(0.75)
+        iqr = q3 - q1
+
+        # anything beyond 1.5x the IQR past Q1/Q3 is considered unusual -
+        # this 1.5 multiplier is a widely used statistical convention
+        lower_bound = q1 - (1.5 * iqr)
+        upper_bound = q3 + (1.5 * iqr)
+
+        outliers = values[(values < lower_bound) | (values > upper_bound)]
+
+        if len(outliers) > 0:
+            report[column] = {
+                "outlier_count": int(len(outliers)),
+                "outlier_values": outliers.tolist(),
+                "normal_range": [float(lower_bound), float(upper_bound)]
+            }
+
+    return report
+
+
+def check_formatting_issues(df: pd.DataFrame) -> dict:
+    """
+    For text columns, flag values that have formatting problems on their own -
+    like extra leading/trailing whitespace - regardless of whether another
+    value matches them once cleaned.
+    """
+    report = {}
+
+    for column in df.columns:
+        if not pd.api.types.is_string_dtype(df[column]):
+            continue
+
+        values = df[column].dropna()
+
+        # a value "has whitespace issues" if it doesn't match its own
+        # stripped version - meaning it has extra spaces somewhere
+        has_extra_whitespace = values[values != values.str.strip()]
+
+        if len(has_extra_whitespace) > 0:
+            report[column] = {
+                "whitespace_issue_count": int(len(has_extra_whitespace)),
+                "example_values": has_extra_whitespace.unique().tolist()[:5]
+            }
+
+    return report
+
+
 if __name__ == "__main__":
     # Quick manual test with a tiny fake messy dataset
     # (row 4 is an exact duplicate of row 1, on purpose)
     sample_data = {
-        "Name": ["Alice", "Bob", None, "David", "Alice"],
-        "Age": [25, None, 30, 40, 25],
-        "Country": ["USA", "usa", "USA", None, "USA"],
-        "Salary": [50000, 60000, "unknown", 55000, 50000],
+        "Name": ["Alice", "Bob", None, "David", "Alice", "Eve", "Frank", " Grace "],
+        "Age": [25, None, 30, 40, 25, 28, 32, 250],   # 250 is an obvious outlier
+        "Country": ["USA", "usa", "USA", None, "USA", "USA", "USA", "USA"],
+        "Salary": [50000, 60000, "unknown", 55000, 50000, 58000, 62000, 59000],
     }
     df = pd.DataFrame(sample_data)
 
@@ -134,3 +201,9 @@ if __name__ == "__main__":
 
     print("\nType mismatches:")
     print(check_type_mismatches(df))
+
+    print("\nOutliers:")
+    print(check_outliers(df))
+
+    print("\nFormatting issues:")
+    print(check_formatting_issues(df))
