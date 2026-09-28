@@ -13,9 +13,9 @@ This project is being built incrementally. Current progress:
 - [x] Missing values detection
 - [x] Duplicate row detection
 - [x] Inconsistent category detection
-- [ ] Data type mismatch detection
-- [ ] Outlier detection
-- [ ] Formatting issue detection (whitespace, casing)
+- [x] Data type mismatch detection
+- [x] Outlier detection
+- [x] Formatting issue detection (whitespace, casing)
 - [ ] AI-powered diagnosis layer (Claude API)
 - [ ] Confidence scoring for auto-apply decisions
 - [ ] Review Mode UI
