@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Data Detective</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; color: #222; }
+    h1 { margin-bottom: 4px; }
+    .subtitle { color: #666; margin-top: 0; }
+    #dropzone {
+      border: 2px dashed #999; border-radius: 8px; padding: 40px;
+      text-align: center; margin: 24px 0; cursor: pointer;
+    }
+    #dropzone.dragover { border-color: #333; background: #f5f5f5; }
+    button {
+      background: #222; color: white; border: none; border-radius: 6px;
+      padding: 10px 18px; cursor: pointer; font-size: 14px;
+    }
+    button:disabled { background: #aaa; cursor: default; }
+    .fix { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
+    .fix.applied { border-left: 4px solid #2e7d32; }
+    .fix.review { border-left: 4px solid #c77700; }
+    .badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; color: white; }
+    .badge.applied { background: #2e7d32; }
+    .badge.review { background: #c77700; }
+    #error { color: #b00020; margin-top: 12px; }
+    #results { margin-top: 24px; }
+    .downloads a { margin-right: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Data Detective 🔍</h1>
+  <p class="subtitle">Upload a messy CSV. It explains every problem it finds, fixes what's safe, and leaves the risky calls to you.</p>
+
+  <div id="dropzone">
+    <p>Drop a .csv file here, or click to choose one</p>
+    <input type="file" id="fileInput" accept=".csv" style="display:none">
+  </div>
+
+  <div id="error"></div>
+  <div id="results"></div>
+
+  <script>
+    const dropzone = document.getElementById("dropzone");
+    const fileInput = document.getElementById("fileInput");
+    const errorBox = document.getElementById("error");
+    const resultsBox = document.getElementById("results");
+
+    dropzone.addEventListener("click", () => fileInput.click());
+    dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("dragover"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+      if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files.length) uploadFile(fileInput.files[0]);
+    });
+
+    let currentJobId = null;
+
+    async function uploadFile(file) {
+      errorBox.textContent = "";
+      resultsBox.innerHTML = "<p>Analyzing... this can take a few seconds while the AI reviews the data.</p>";
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const response = await fetch("/api/clean", { method: "POST", body: formData });
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.detail || "Something went wrong");
+        }
+        currentJobId = data.job_id;
+        renderResults(data);
+      } catch (err) {
+        resultsBox.innerHTML = "";
+        errorBox.textContent = err.message;
+      }
+    }
+
+    async function applySelected() {
+      const checked = [...document.querySelectorAll(".review-checkbox:checked")];
+      const approvedIds = checked.map(el => parseInt(el.dataset.id, 10));
+      if (approvedIds.length === 0) return;
+
+      resultsBox.insertAdjacentHTML("beforeend", "<p>Applying selected fixes...</p>");
+
+      try {
+        const response = await fetch(`/api/apply/${currentJobId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approved_ids: approvedIds }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Something went wrong");
+        renderResults(data);
+      } catch (err) {
+        errorBox.textContent = err.message;
+      }
+    }
+
+    function renderResults(data) {
+      if (!data.results || data.results.length === 0) {
+        resultsBox.innerHTML = `<p>${data.message || "No issues found - this dataset looks clean!"}</p>`;
+        return;
+      }
+
+      const applied = data.results.filter(r => r.auto_apply);
+      const review = data.results.filter(r => !r.auto_apply);
+
+      let html = `
+        <p><strong>${data.rows_before} → ${data.rows_after} rows.</strong>
+        ${applied.length} fix(es) applied, ${review.length} still need your review.</p>
+        <div class="downloads">
+          <a href="${data.download_cleaned_csv}">⬇ Download cleaned CSV</a>
+          <a href="${data.download_report}">⬇ Download cleaning report</a>
+        </div>
+      `;
+
+      for (const r of applied) {
+        html += `
+          <div class="fix applied">
+            <span class="badge applied">Applied</span>
+            <strong>${r.column}</strong> — ${r.issue_type} (confidence ${Math.round(r.final_confidence)})
+            <p>${r.explanation}</p>
+            <p><em>Fix:</em> ${r.suggested_fix}</p>
+          </div>
+        `;
+      }
+
+      if (review.length > 0) {
+        html += `<h3>Needs your review</h3>`;
+        for (const r of review) {
+          html += `
+            <div class="fix review">
+              <label>
+                <input type="checkbox" class="review-checkbox" data-id="${r.id}">
+                <span class="badge review">Needs review</span>
+                <strong>${r.column}</strong> — ${r.issue_type} (confidence ${Math.round(r.final_confidence)})
+              </label>
+              <p>${r.explanation}</p>
+              <p><em>Suggested fix:</em> ${r.suggested_fix}</p>
+            </div>
+          `;
+        }
+        html += `<button onclick="applySelected()">Apply selected fixes</button>`;
+      }
+
+      resultsBox.innerHTML = html;
+    }
+  </script>
+</body>
+</html>

@@ -90,15 +90,105 @@ def fix_duplicates(df: pd.DataFrame, column: str = None):
     }
 
 
+def fix_missing_values(df: pd.DataFrame, column: str):
+    """
+    Fill missing values: the median for number columns, the most common
+    value for text columns. This is only run when a person has explicitly
+    approved it - guessing at real data is never done automatically.
+    """
+    if column not in df.columns:
+        return df, None
+
+    col = df[column]
+    missing_mask = col.isna()
+    count = int(missing_mask.sum())
+    if count == 0:
+        return df, None
+
+    if pd.api.types.is_numeric_dtype(col):
+        fill_value = float(col.median())
+        method = "the median"
+    else:
+        mode = col.mode(dropna=True)
+        if mode.empty:
+            return df, None
+        fill_value = mode.iloc[0]
+        method = "the most common value"
+
+    df[column] = col.fillna(fill_value)
+    return df, {
+        "column": column,
+        "action": f"Filled missing values with {method}",
+        "detail": f"{count} value(s) filled with {fill_value!r}",
+    }
+
+
+def fix_type_mismatch(df: pd.DataFrame, column: str):
+    """
+    Turn values that don't fit the column's type (e.g. "unknown" in a
+    number column) into blanks, so the column becomes properly numeric.
+    """
+    if column not in df.columns:
+        return df, None
+
+    col = df[column]
+    numeric = pd.to_numeric(col, errors="coerce")
+    bad_mask = col.notna() & numeric.isna()
+    count = int(bad_mask.sum())
+    if count == 0:
+        return df, None
+
+    bad_values = col[bad_mask].unique().tolist()
+    df[column] = numeric
+    return df, {
+        "column": column,
+        "action": "Converted non-numeric values to blank",
+        "detail": f"{count} value(s) {bad_values} could not be read as numbers, so they were set to blank",
+    }
+
+
+def fix_outliers(df: pd.DataFrame, column: str):
+    """
+    Set values far outside the normal range (using the same IQR rule as
+    the profiler) to blank, so they don't skew any analysis using this data.
+    """
+    if column not in df.columns or not pd.api.types.is_numeric_dtype(df[column]):
+        return df, None
+
+    values = df[column].dropna()
+    if len(values) < 4:
+        return df, None
+
+    q1, q3 = values.quantile(0.25), values.quantile(0.75)
+    iqr = q3 - q1
+    lower, upper = q1 - (1.5 * iqr), q3 + (1.5 * iqr)
+
+    outlier_mask = df[column].notna() & ((df[column] < lower) | (df[column] > upper))
+    count = int(outlier_mask.sum())
+    if count == 0:
+        return df, None
+
+    outlier_values = df.loc[outlier_mask, column].tolist()
+    df.loc[outlier_mask, column] = pd.NA
+    return df, {
+        "column": column,
+        "action": "Set outlier values to blank",
+        "detail": f"{count} value(s) {outlier_values} were outside the normal range ({lower:.1f}-{upper:.1f}) and set to blank",
+    }
+
+
 # which fixer handles which issue type - and the order they must run in:
-# trim spaces first, standardize second, remove duplicates LAST (because
-# cleaning can turn near-copies into exact copies)
+# trim spaces and standardize first, then fix values, and remove
+# duplicates LAST (because cleaning can turn near-copies into exact copies)
 FIXERS = {
     "formatting": fix_formatting,
     "inconsistent_categories": fix_inconsistent_categories,
+    "type_mismatch": fix_type_mismatch,
+    "outliers": fix_outliers,
+    "missing_values": fix_missing_values,
     "duplicates": fix_duplicates,
 }
-FIX_ORDER = ["formatting", "inconsistent_categories", "duplicates"]
+FIX_ORDER = ["formatting", "inconsistent_categories", "type_mismatch", "outliers", "missing_values", "duplicates"]
 
 
 def apply_fixes(df: pd.DataFrame, results: list):

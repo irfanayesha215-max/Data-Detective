@@ -94,8 +94,8 @@ def print_results(results: list) -> None:
 
 
 if __name__ == "__main__":
-       file_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_FILE
-df, results = run_pipeline(file_path)
-print_results(results)
-if results:
+    file_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_FILE
+    df, results = run_pipeline(file_path)
+    print_results(results)
+    if results:
         clean_and_save(df, results, file_path)
