@@ -17,10 +17,10 @@ This project is being built incrementally. Current progress:
 - [x] Outlier detection
 - [x] Formatting issue detection (whitespace, casing)
 - [x] AI-powered diagnosis layer (GROQ API)
-- [ ] Confidence scoring for auto-apply decisions
-- [ ] Review Mode UI
-- [ ] Auto Mode
-- [ ] Cleaning report generation
+- [x] Confidence scoring for auto-apply decisions
+- [x] Review Mode UI
+- [x] Auto Mode
+- [x] Cleaning report generation
 
 ## Tech stack
 
@@ -38,15 +38,34 @@ pip install -r requirements.txt
 python3 app/profiler.py
 ```
 
+## Running the web app
+
+\`\`\`bash
+cd backend
+source venv/bin/activate
+uvicorn app.main:app --reload
+\`\`\`
+Then open http://127.0.0.1:8000 in your browser.
+
+
 ## Project structure
 
-```
-data-detective/
+ data-detective/
+├── README.md
+├── .gitignore
 ├── backend/
 │   ├── app/
-│   │   └── profiler.py     # Core data profiling checks
+│   │   ├── __init__.py
+│   │   ├── profiler.py      # 6 data profiling checks
+│   │   ├── diagnosis.py     # Sends the report to the AI (Groq) for plain-English diagnosis
+│   │   ├── confidence.py    # Caps the AI's confidence scores per issue type
+│   │   ├── fixer.py         # Applies approved fixes, saves cleaned file + report
+│   │   ├── pipeline.py      # Connects profiler -> diagnosis -> confidence -> fixer
+│   │   └── main.py          # FastAPI server (upload, review, download endpoints)
 │   ├── tests/
 │   └── requirements.txt
-├── frontend/                # Coming soon
-└── sample_data/              # Example messy datasets for testing
-```
+├── frontend/
+│   └── index.html           # Upload page with Review Mode (approve fixes individually)
+├── sample_data/
+│   └── messy_sample.csv     # Example messy dataset for testing
+└── output/                  # Generated cleaned files + reports (gitignored, not tracked)
