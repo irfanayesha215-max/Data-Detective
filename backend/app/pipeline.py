@@ -23,6 +23,7 @@ from app.profiler import (
 )
 from app.diagnosis import diagnose_report
 from app.confidence import apply_confidence_caps
+from app.fixer import clean_and_save
 
 # project_root/sample_data/messy_sample.csv
 DEFAULT_FILE = Path(__file__).resolve().parents[2] / "sample_data" / "messy_sample.csv"
@@ -64,19 +65,18 @@ def build_report(df: pd.DataFrame) -> dict:
     return report
 
 
-def run_pipeline(file_path) -> list:
+def run_pipeline(file_path) -> tuple:
     df = pd.read_csv(file_path)
     print(f"Loaded {len(df)} rows and {len(df.columns)} columns from {Path(file_path).name}")
 
     report = build_report(df)
     if not report:
         print("No issues found - this dataset looks clean!")
-        return []
+        return df, []
 
     print(f"Profiler found problems in {len(report)} categories. Asking the AI to diagnose...")
     diagnosis = diagnose_report(report)
-    return apply_confidence_caps(diagnosis)
-
+    return df, apply_confidence_caps(diagnosis)
 
 def print_results(results: list) -> None:
     if not results:
@@ -94,5 +94,8 @@ def print_results(results: list) -> None:
 
 
 if __name__ == "__main__":
-    file_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_FILE
-    print_results(run_pipeline(file_path))
+       file_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_FILE
+df, results = run_pipeline(file_path)
+print_results(results)
+if results:
+        clean_and_save(df, results, file_path)
