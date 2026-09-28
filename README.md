@@ -16,7 +16,7 @@ This project is being built incrementally. Current progress:
 - [x] Data type mismatch detection
 - [x] Outlier detection
 - [x] Formatting issue detection (whitespace, casing)
-- [ ] AI-powered diagnosis layer (Claude API)
+- [x] AI-powered diagnosis layer (GROQ API)
 - [ ] Confidence scoring for auto-apply decisions
 - [ ] Review Mode UI
 - [ ] Auto Mode
