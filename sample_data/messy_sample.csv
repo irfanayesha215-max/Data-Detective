@@ -1,0 +1,9 @@
+Name,Age,Country,Salary
+Alice,25,USA,50000
+Bob,,usa,60000
+,30,USA,unknown
+David,40,,55000
+Alice,25,USA,50000
+Eve,28,USA,58000
+Frank,32,USA,62000
+ Grace ,250,USA,59000
