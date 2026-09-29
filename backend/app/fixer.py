@@ -188,24 +188,28 @@ FIXERS = {
     "missing_values": fix_missing_values,
     "duplicates": fix_duplicates,
 }
-FIX_ORDER = ["formatting", "inconsistent_categories", "type_mismatch", "outliers", "missing_values", "duplicates"]
+FIX_ORDER = ["formatting", "inconsistent_categories", "type_mismatch", "missing_values", "outliers", "duplicates"]
 
 
 def apply_fixes(df: pd.DataFrame, results: list):
     """
-    Apply every fix marked auto_apply. Return (cleaned_df, applied, skipped).
-    Nothing is ever applied silently: every fix ends up in one of the two lists.
+    Apply every fix marked auto_apply. Returns (cleaned_df, results) where
+    each result dict now has a "status" field showing what actually
+    happened - "applied", "skipped", or "needs_review" - plus "status_detail"
+    explaining why. The frontend renders from this field, not from
+    auto_apply, so the badge always matches reality.
     """
     df = df.copy()   # never modify the original data
-    applied, skipped = [], []
+    results = [dict(r) for r in results]   # don't mutate the caller's list
     to_apply = []
 
     for r in results:
         if not r["auto_apply"]:
-            reason = f"Needs your review (confidence {r['final_confidence']:.0f})"
-            skipped.append({**r, "reason": reason})
+            r["status"] = "needs_review"
+            r["status_detail"] = f"Needs your review (confidence {r['final_confidence']:.0f})"
         elif r["issue_type"] not in FIXERS:
-            skipped.append({**r, "reason": "No automatic fixer available yet"})
+            r["status"] = "skipped"
+            r["status_detail"] = "No automatic fixer available yet"
         else:
             to_apply.append(r)
 
@@ -214,16 +218,18 @@ def apply_fixes(df: pd.DataFrame, results: list):
     for r in to_apply:
         df, change = FIXERS[r["issue_type"]](df, r["column"])
         if change:
-            applied.append(change)
+            r["status"] = "applied"
+            r["status_detail"] = f"{change['action']}. {change['detail']}"
         else:
-            skipped.append({**r, "reason": "Nothing left to change"})
+            r["status"] = "skipped"
+            r["status_detail"] = "Nothing left to change"
 
-    return df, applied, skipped
+    return df, results
 
 
-def write_report(path: Path, source_name: str, rows_before: int, rows_after: int,
-                 applied: list, skipped: list) -> None:
-    review = [s for s in skipped if s["reason"].startswith("Needs your review")]
+def write_report(path: Path, source_name: str, rows_before: int, rows_after: int, results: list) -> None:
+    applied = [r for r in results if r["status"] == "applied"]
+    review = [r for r in results if r["status"] == "needs_review"]
 
     lines = [
         "# Cleaning Report",
@@ -237,17 +243,17 @@ def write_report(path: Path, source_name: str, rows_before: int, rows_after: int
         "",
     ]
     if applied:
-        for i, change in enumerate(applied, start=1):
-            lines.append(f"{i}. **{change['column']}**: {change['action']}. {change['detail']}")
+        for i, r in enumerate(applied, start=1):
+            lines.append(f"{i}. **{r['column']}**: {r['status_detail']}")
     else:
         lines.append("_No fixes were applied._")
 
     lines += ["", "## Not applied - needs your review", ""]
     if review:
-        for s in review:
-            lines.append(f"- **{s['column']}** ({s['issue_type']}, confidence {s['final_confidence']:.0f})")
-            lines.append(f"  - Problem: {s['explanation']}")
-            lines.append(f"  - Suggested fix: {s['suggested_fix']}")
+        for r in review:
+            lines.append(f"- **{r['column']}** ({r['issue_type']}, confidence {r['final_confidence']:.0f})")
+            lines.append(f"  - Problem: {r['explanation']}")
+            lines.append(f"  - Suggested fix: {r['suggested_fix']}")
     else:
         lines.append("_Nothing needs review._")
 
@@ -260,16 +266,14 @@ def clean_and_save(df: pd.DataFrame, results: list, source_path, output_dir=None
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(source_path).stem
 
-    cleaned_df, applied, skipped = apply_fixes(df, results)
+    cleaned_df, results = apply_fixes(df, results)
+    applied_count = sum(1 for r in results if r["status"] == "applied")
 
     cleaned_path = output_dir / f"{stem}_cleaned.csv"
     report_path = output_dir / f"{stem}_cleaning_report.md"
-    # a column with blanks becomes decimals in pandas (25 -> 25.0), even though
-    # we never touched it. convert_dtypes() turns whole-number columns back
-    # into integers, so the file only changes where we said it did.
     cleaned_df.convert_dtypes().to_csv(cleaned_path, index=False)
-    write_report(report_path, Path(source_path).name, len(df), len(cleaned_df), applied, skipped)
+    write_report(report_path, Path(source_path).name, len(df), len(cleaned_df), results)
 
-    print(f"Applied {len(applied)} fixes. Rows: {len(df)} -> {len(cleaned_df)}")
+    print(f"Applied {applied_count} fixes. Rows: {len(df)} -> {len(cleaned_df)}")
     print(f"Cleaned file:    {cleaned_path}")
     print(f"Cleaning report: {report_path}")
