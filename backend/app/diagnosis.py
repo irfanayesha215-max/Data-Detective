@@ -6,7 +6,25 @@ from dotenv import load_dotenv
 # load the GROQ_API_KEY from the .env file into the environment
 load_dotenv()
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+_API_KEY = os.environ.get("GROQ_API_KEY")
+# client is created lazily (see get_client()) so a missing key doesn't crash
+# the whole app at import time - it only fails when a diagnosis is actually
+# requested, with a message that says exactly what to fix.
+_client = None
+
+
+def get_client() -> Groq:
+    global _client
+    if not _API_KEY:
+        raise RuntimeError(
+            "GROQ_API_KEY is not set. Create a .env file in backend/ with "
+            "GROQ_API_KEY=your_key_here (get a free key at console.groq.com)."
+        )
+    if _client is None:
+        _client = Groq(api_key=_API_KEY)
+    return _client
+
+
 # Groq retires/renames models fairly often. If you get a "model_not_found"
 # error, list current models with: Groq().models.list() and update this line.
 MODEL_NAME = "openai/gpt-oss-120b"
@@ -46,7 +64,7 @@ def diagnose_report(profiling_report: dict) -> dict:
     Send the raw profiling report to the LLM and get back structured
     diagnoses with plain-English explanations and confidence scores.
     """
-    response = client.chat.completions.create(
+    response = get_client().chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
