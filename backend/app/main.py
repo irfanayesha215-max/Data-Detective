@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -40,7 +40,6 @@ app.add_middleware(
 JOBS_DIR = Path(__file__).resolve().parents[2] / "output" / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
-VALID_MODES = {"review", "auto", "full_auto"} 
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -55,21 +54,23 @@ class ApplyRequest(BaseModel):
 
 def _run_and_save(df: pd.DataFrame, results: list, job_dir: Path, original_filename: str) -> dict:
     """Shared by both endpoints: apply fixes, save the outputs, build the response."""
-    cleaned_df, applied, skipped = apply_fixes(df, results)
+    cleaned_df, results = apply_fixes(df, results)
 
     cleaned_path = job_dir / "cleaned.csv"
     report_path = job_dir / "report.md"
     cleaned_df.convert_dtypes().to_csv(cleaned_path, index=False)
-    write_report(report_path, original_filename, len(df), len(cleaned_df), applied, skipped)
+    write_report(report_path, original_filename, len(df), len(cleaned_df), results)
 
-    # save the current state of every result (including which are now
-    # applied) so a later approval request can pick up from here
+    # save the current state of every result (including its real status)
+    # so a later approval request can pick up from here
     (job_dir / "results.json").write_text(json.dumps(results), encoding="utf-8")
 
+    applied_count = sum(1 for r in results if r["status"] == "applied")
     return {
         "job_id": job_dir.name,
         "rows_before": len(df),
         "rows_after": len(cleaned_df),
+        "applied_count": applied_count,
         "results": results,
         "download_cleaned_csv": f"/api/download/{job_dir.name}/cleaned.csv",
         "download_report": f"/api/download/{job_dir.name}/report.md",
@@ -77,24 +78,20 @@ def _run_and_save(df: pd.DataFrame, results: list, job_dir: Path, original_filen
 
 
 @app.post("/api/clean")
-def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
+async def clean_file(file: UploadFile = File(...), full_auto: bool = False):
     """
     Accept a CSV upload, run it through the full pipeline, apply the safe
     fixes, and return the results as JSON with links to download the
     cleaned file and the report.
 
-    mode="full_auto" applies EVERY suggested fix, including risky ones like
-    filling missing values or removing outliers - only chosen when the person
-    has explicitly picked "Full Auto" and seen the warning about it.
+    full_auto=True applies EVERY suggested fix, including risky ones like
+    filling missing values or removing outliers - only set when the person
+    has explicitly chosen "Full Auto" and seen the warning about it.
     """
-    if mode not in VALID_MODES:
-        raise HTTPException(status_code=400, detail="Unknown mode")
-    full_auto = mode == "full_auto"
-
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a .csv file")
 
-    job_id = uuid.uuid4().hex[:8]
+    job_id = uuid.uuid4().hex   # full UUID (32 hex chars) - hard to guess
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True)
 
@@ -108,11 +105,17 @@ def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read that CSV: {e}")
 
+    if len(df) == 0:
+        raise HTTPException(status_code=400, detail="That CSV has no data rows to clean.")
+
     report = build_report(df)
     if not report:
         return {"job_id": job_id, "message": "No issues found - this dataset looks clean!", "results": []}
 
-    diagnosis = diagnose_report(report)
+    try:
+        diagnosis = diagnose_report(report)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     results = apply_confidence_caps(diagnosis)
     # give every diagnosis a stable id so the frontend can say
     # "the person approved fix #3" instead of matching by text
@@ -121,9 +124,8 @@ def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
         if full_auto:
             r["auto_apply"] = True   # explicit override - person chose this
 
-    response = _run_and_save(df, results, job_dir, file.filename)
-    response["mode"] = mode
-    return response
+    return _run_and_save(df, results, job_dir, file.filename)
+
 
 @app.post("/api/apply/{job_id}")
 def apply_selected(job_id: str, body: ApplyRequest):
