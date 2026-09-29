@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -39,6 +39,19 @@ app.add_middleware(
 # so two people using the tool at once never overwrite each other's files
 JOBS_DIR = Path(__file__).resolve().parents[2] / "output" / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+VALID_MODES = {"review", "auto", "full_auto"}
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024   # 10 MB - generous for a CSV, keeps the demo responsive
+MAX_JOB_AGE_HOURS = 24                # old job folders older than this get cleaned up
+
+
+def _cleanup_old_jobs() -> None:
+    """Delete job folders older than MAX_JOB_AGE_HOURS, so disk usage doesn't grow forever."""
+    import time
+    cutoff = time.time() - (MAX_JOB_AGE_HOURS * 3600)
+    for job_folder in JOBS_DIR.glob("*"):
+        if job_folder.is_dir() and job_folder.stat().st_mtime < cutoff:
+            shutil.rmtree(job_folder, ignore_errors=True)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -78,26 +91,42 @@ def _run_and_save(df: pd.DataFrame, results: list, job_dir: Path, original_filen
 
 
 @app.post("/api/clean")
-async def clean_file(file: UploadFile = File(...), full_auto: bool = False):
+def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
     """
     Accept a CSV upload, run it through the full pipeline, apply the safe
     fixes, and return the results as JSON with links to download the
     cleaned file and the report.
 
-    full_auto=True applies EVERY suggested fix, including risky ones like
-    filling missing values or removing outliers - only set when the person
-    has explicitly chosen "Full Auto" and seen the warning about it.
+    mode="full_auto" applies EVERY suggested fix, including risky ones like
+    filling missing values or removing outliers - only chosen when the
+    person has explicitly picked "Full Auto" and seen the warning about it.
     """
+    if mode not in VALID_MODES:
+        raise HTTPException(status_code=400, detail="Unknown mode")
+    full_auto = mode == "full_auto"
+
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a .csv file")
+
+    _cleanup_old_jobs()
 
     job_id = uuid.uuid4().hex   # full UUID (32 hex chars) - hard to guess
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True)
 
     upload_path = job_dir / "original.csv"
+    total_bytes = 0
     with upload_path.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+        while chunk := file.file.read(1024 * 1024):
+            total_bytes += len(chunk)
+            if total_bytes > MAX_UPLOAD_BYTES:
+                f.close()
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large - please keep uploads under {MAX_UPLOAD_BYTES // (1024*1024)} MB",
+                )
+            f.write(chunk)
     (job_dir / "original_filename.txt").write_text(file.filename, encoding="utf-8")
 
     try:
@@ -116,6 +145,7 @@ async def clean_file(file: UploadFile = File(...), full_auto: bool = False):
         diagnosis = diagnose_report(report)
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
     results = apply_confidence_caps(diagnosis)
     # give every diagnosis a stable id so the frontend can say
     # "the person approved fix #3" instead of matching by text
@@ -124,7 +154,9 @@ async def clean_file(file: UploadFile = File(...), full_auto: bool = False):
         if full_auto:
             r["auto_apply"] = True   # explicit override - person chose this
 
-    return _run_and_save(df, results, job_dir, file.filename)
+    response = _run_and_save(df, results, job_dir, file.filename)
+    response["mode"] = mode
+    return response
 
 
 @app.post("/api/apply/{job_id}")
