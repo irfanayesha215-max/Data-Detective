@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -40,6 +40,7 @@ app.add_middleware(
 JOBS_DIR = Path(__file__).resolve().parents[2] / "output" / "jobs"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
+VALID_MODES = {"review", "auto", "full_auto"} 
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -76,13 +77,20 @@ def _run_and_save(df: pd.DataFrame, results: list, job_dir: Path, original_filen
 
 
 @app.post("/api/clean")
-async def clean_file(file: UploadFile = File(...)):
+def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
     """
     Accept a CSV upload, run it through the full pipeline, apply the safe
     fixes, and return the results as JSON with links to download the
-    cleaned file and the report. Fixes below the confidence threshold are
-    explained but left for the person to approve via /api/apply.
+    cleaned file and the report.
+
+    mode="full_auto" applies EVERY suggested fix, including risky ones like
+    filling missing values or removing outliers - only chosen when the person
+    has explicitly picked "Full Auto" and seen the warning about it.
     """
+    if mode not in VALID_MODES:
+        raise HTTPException(status_code=400, detail="Unknown mode")
+    full_auto = mode == "full_auto"
+
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a .csv file")
 
@@ -110,9 +118,12 @@ async def clean_file(file: UploadFile = File(...)):
     # "the person approved fix #3" instead of matching by text
     for i, r in enumerate(results):
         r["id"] = i
+        if full_auto:
+            r["auto_apply"] = True   # explicit override - person chose this
 
-    return _run_and_save(df, results, job_dir, file.filename)
-
+    response = _run_and_save(df, results, job_dir, file.filename)
+    response["mode"] = mode
+    return response
 
 @app.post("/api/apply/{job_id}")
 def apply_selected(job_id: str, body: ApplyRequest):
