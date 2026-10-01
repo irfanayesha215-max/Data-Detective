@@ -1,7 +1,10 @@
 import os
 import json
+from typing import Literal
+
 from groq import Groq
 from dotenv import load_dotenv
+from pydantic import BaseModel, ValidationError, field_validator
 
 # load the GROQ_API_KEY from the .env file into the environment
 load_dotenv()
@@ -59,6 +62,71 @@ no explanation, no markdown formatting, no code fences:
 """
 
 
+# ---------------------------------------------------------------------------
+# Validation: the LLM is the one part of the pipeline we don't control, so
+# nothing it returns reaches the fixer until it passes this schema.
+# ---------------------------------------------------------------------------
+
+IssueType = Literal[
+    "missing_values",
+    "duplicates",
+    "inconsistent_categories",
+    "type_mismatch",
+    "outliers",
+    "formatting",
+]
+ISSUE_TYPE_ALIASES = {
+    "type_mismatches": "type_mismatch",
+    "formatting_issues": "formatting",
+    "duplicate_rows": "duplicates",
+    "duplicate": "duplicates",
+    "missing_value": "missing_values",
+    "outlier": "outliers",
+    "inconsistent_category": "inconsistent_categories",
+}
+
+class Diagnosis(BaseModel):
+    column: str
+    issue_type: IssueType
+    explanation: str
+    suggested_fix: str
+    confidence: float = 0
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def clamp_confidence(cls, v):
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return 0.0   # same "safest" fallback confidence.py uses
+        return max(0.0, min(100.0, v))
+
+    @field_validator("issue_type", mode="before")
+    @classmethod
+    def normalize_issue_type(cls, v):
+        if isinstance(v, str):
+            key = v.strip().lower().replace(" ", "_").replace("-", "_")
+            return ISSUE_TYPE_ALIASES.get(key, key)
+        return v
+    
+def validate_diagnoses(parsed) -> dict:
+    """Keep only well-formed diagnoses; never let a bad one reach the fixer."""
+    items = parsed.get("diagnoses") if isinstance(parsed, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("The AI response did not contain a 'diagnoses' list.")
+
+    valid, dropped = [], []
+    for item in items:
+        try:
+            valid.append(Diagnosis.model_validate(item).model_dump())
+        except ValidationError:
+            dropped.append(item)
+
+    if dropped:
+        print(f"Warning: dropped {len(dropped)} malformed diagnosis item(s): {dropped}")
+    return {"diagnoses": valid}
+
+
 def diagnose_report(profiling_report: dict) -> dict:
     """
     Send the raw profiling report to the LLM and get back structured
@@ -73,15 +141,17 @@ def diagnose_report(profiling_report: dict) -> dict:
         temperature=0.2,   # low temperature = more consistent, less "creative"
     )
 
-    raw_text = response.choices[0].message.content
+    raw_text = response.choices[0].message.content or ""
 
     try:
-        return json.loads(raw_text)
+        parsed = json.loads(raw_text)
     except json.JSONDecodeError:
         # the model occasionally wraps JSON in markdown code fences despite
         # instructions - this strips them as a fallback before giving up
         cleaned = raw_text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
+
+    return validate_diagnoses(parsed)
 
 
 if __name__ == "__main__":
