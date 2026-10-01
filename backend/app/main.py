@@ -17,6 +17,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from groq import APIError
 
 from app.pipeline import build_report
 from app.diagnosis import diagnose_report
@@ -143,8 +144,10 @@ def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
 
     try:
         diagnosis = diagnose_report(report)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(status_code=500, detail=f"The AI returned an unusable response: {e}")
+    except APIError:
+        raise HTTPException(status_code=502, detail="The AI service is unavailable right now. Please try again.")
 
     results = apply_confidence_caps(diagnosis)
     # give every diagnosis a stable id so the frontend can say

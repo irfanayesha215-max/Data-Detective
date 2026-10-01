@@ -132,6 +132,13 @@ def fix_type_mismatch(df: pd.DataFrame, column: str):
         return df, None
 
     col = df[column]
+
+    # IDs like zip codes ("00123") or phone numbers ("+92300...") look numeric,
+    # but converting them would strip leading zeros / plus signs. Leave them alone.
+    as_text = col.dropna().astype(str).str.strip()
+    if as_text.str.match(r"^(0\d|\+)").any():
+        return df, None
+
     numeric = pd.to_numeric(col, errors="coerce")
     bad_mask = col.notna() & numeric.isna()
     count = int(bad_mask.sum())
