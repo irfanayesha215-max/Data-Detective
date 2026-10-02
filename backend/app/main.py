@@ -18,6 +18,8 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from groq import APIError
+from pathlib import Path
+from app.loader import load_file, LoadError, SUPPORTED_EXTENSIONS
 
 from app.pipeline import build_report
 from app.diagnosis import diagnose_report
@@ -106,18 +108,22 @@ def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
         raise HTTPException(status_code=400, detail="Unknown mode")
     full_auto = mode == "full_auto"
 
-    if not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Please upload a .csv file")
+    # REPLACES the old: if not file.filename.lower().endswith(".csv"): ...
+    ext = Path(file.filename).suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Please upload a .csv or .xlsx file")
 
     _cleanup_old_jobs()
 
-    job_id = uuid.uuid4().hex   # full UUID (32 hex chars) - hard to guess
+    job_id = uuid.uuid4().hex
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True)
 
-    upload_path = job_dir / "original.csv"
+    # REPLACES the old: upload_path = job_dir / "original.csv"
+    upload_path = job_dir / f"upload{ext}"
     total_bytes = 0
     with upload_path.open("wb") as f:
+        ...  # the size-cap loop stays exactly as it is
         while chunk := file.file.read(1024 * 1024):
             total_bytes += len(chunk)
             if total_bytes > MAX_UPLOAD_BYTES:
@@ -131,13 +137,12 @@ def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
     (job_dir / "original_filename.txt").write_text(file.filename, encoding="utf-8")
 
     try:
-        df = pd.read_csv(upload_path)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read that CSV: {e}")
+        df = load_file(upload_path, file.filename)
+    except LoadError as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=str(e))
 
-    if len(df) == 0:
-        raise HTTPException(status_code=400, detail="That CSV has no data rows to clean.")
-
+    df.to_csv(job_dir / "original.csv", index=False, encoding="utf-8")
     report = build_report(df)
     if not report:
         return {"job_id": job_id, "message": "No issues found - this dataset looks clean!", "results": []}
