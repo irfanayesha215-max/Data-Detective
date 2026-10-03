@@ -34,6 +34,7 @@
     #error { color: #b00020; margin-top: 12px; }
     #results { margin-top: 24px; }
     .downloads a { margin-right: 16px; }
+    .notice { background: #fff4e5; border: 1px solid #c77700; border-radius: 8px; padding: 10px 14px; margin: 12px 0; font-size: 14px; }
   </style>
 </head>
 <body>
@@ -96,6 +97,7 @@
     });
 
     let currentJobId = null;
+    let currentNotice = null;   // kept so the banner survives re-renders after "Apply selected"
 
     // Column names come from the uploaded CSV, and explanations/fixes come
     // from the AI (which often echoes back column names). Both are
@@ -134,6 +136,7 @@
           throw new Error(data.detail || "Something went wrong");
         }
         currentJobId = data.job_id;
+        currentNotice = data.notice || null;
         renderResults(data, mode);
       } catch (err) {
         resultsBox.innerHTML = "";
@@ -173,6 +176,7 @@
       const review = data.results.filter(r => r.status === "needs_review");
 
       let html = `
+        ${currentNotice ? `<div class="notice">⚠️ ${escapeHtml(currentNotice)}</div>` : ""}
         <p><strong>${data.rows_before} → ${data.rows_after} rows.</strong>
         ${applied.length} fix(es) applied, ${review.length} were left for review.</p>
         <div class="downloads">
