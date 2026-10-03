@@ -17,12 +17,11 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from groq import APIError
 from pathlib import Path
 from app.loader import load_file, LoadError, SUPPORTED_EXTENSIONS
-
+from groq import APIError, APITimeoutError, RateLimitError
+from app.diagnosis import diagnose_report, fallback_diagnosis
 from app.pipeline import build_report
-from app.diagnosis import diagnose_report
 from app.confidence import apply_confidence_caps
 from app.fixer import apply_fixes, write_report
 
@@ -147,13 +146,22 @@ def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
     if not report:
         return {"job_id": job_id, "message": "No issues found - this dataset looks clean!", "results": []}
 
+    notice = None
     try:
         diagnosis = diagnose_report(report)
-    except (RuntimeError, ValueError) as e:
-        raise HTTPException(status_code=500, detail=f"The AI returned an unusable response: {e}")
-    except APIError:
-        raise HTTPException(status_code=502, detail="The AI service is unavailable right now. Please try again.")
-
+    except (RuntimeError, ValueError, APIError) as e:
+        # APIError covers timeouts, rate limits and connection failures
+        print(f"AI diagnosis failed ({type(e).__name__}): {e}")
+        if full_auto:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=503,
+                detail="Full Auto needs the AI service, which isn't available right now. "
+                       "Try Review mode, or try again in a minute.",
+            )
+        diagnosis = fallback_diagnosis(report)
+        notice = ("The AI service is unavailable, so these explanations are generic. "
+                  "Only the safest fixes were applied automatically.")
     results = apply_confidence_caps(diagnosis)
     # give every diagnosis a stable id so the frontend can say
     # "the person approved fix #3" instead of matching by text
@@ -164,6 +172,8 @@ def clean_file(file: UploadFile = File(...), mode: str = Form("review")):
 
     response = _run_and_save(df, results, job_dir, file.filename)
     response["mode"] = mode
+    if notice:
+        response["notice"] = notice
     return response
 
 
